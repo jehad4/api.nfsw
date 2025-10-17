@@ -1,7 +1,7 @@
 {
   "name": "image-scraper",
   "version": "1.0.0",
-  "description": "Scrape and download images from ahottie.net",
+  "description": "Scrape images from ahottie.net and save to cache",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -10,8 +10,6 @@
   "dependencies": {
     "express": "^4.18.2",
     "puppeteer": "^23.0.0",
-    "node-fetch": "^2.7.0",
-    "dotenv": "^16.4.5",
-    "@puppeteer/browsers": "^2.2.0"
+    "dotenv": "^16.4.5"
   }
 }
