@@ -4,7 +4,8 @@
   "description": "Scrape and download images from ahottie.net",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build": "npm install && apt-get update && apt-get install -y chromium"
   },
   "dependencies": {
     "express": "^4.17.1",
