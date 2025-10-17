@@ -89,7 +89,7 @@ app.get('/api/album/:model/:index', async (req, res) => {
         browser = await puppeteer.launch({
           headless: 'new',
           args: browserArgs,
-          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
           timeout: 90000
         });
         const page = await browser.newPage();
