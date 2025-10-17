@@ -1,19 +1,18 @@
 {
   "name": "image-scraper",
   "version": "1.0.0",
-  "description": "Scrape images from ahottie.net and save to cache",
+  "description": "Scrape images from ahottie.net - optimized for Render",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "puppeteer": "^23.0.0",
-    "dotenv": "^16.4.5",
-    "node-fetch": "^3.3.2"
+    "puppeteer": "^21.5.2",
+    "node-fetch": "^2.7.0",
+    "dotenv": "^16.3.1"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=18.0.0"
   }
 }
