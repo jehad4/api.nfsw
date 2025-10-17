@@ -1,147 +1,125 @@
-const express = require('express');
-const puppeteer = require('puppeteer');
-const fs = require('fs').promises;
-const path = require('path');
-const fetch = require('node-fetch');
-require('dotenv').config();
+const express = require("express");
+const puppeteer = require("puppeteer");
+const fs = require("fs").promises;
+const path = require("path");
+const fetch = require("node-fetch");
+require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 10000;
-const CACHE_DIR = path.join(__dirname, 'storage', 'cache');
+const API_KEY = process.env.API_KEY || "jehad4";
 
-// Ensure cache directory exists
-(async () => {
-  try {
-    await fs.mkdir(CACHE_DIR, { recursive: true });
-    console.log('Created directory:', CACHE_DIR);
-  } catch (err) {
-    console.error('Failed to create cache directory:', err);
-  }
-})();
+app.use(express.json());
+app.use("/downloads", express.static(path.join(__dirname, "downloads")));
 
-// Helper: sanitize filenames
-const sanitize = (str) => str.replace(/[<>:"/\\|?*]+/g, '_');
-
-// Helper: sleep
-const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Scrape images from ahottie.net
-async function scrapeImages(query, index = 1) {
-  const searchUrl = `https://ahottie.net/search?kw=${encodeURIComponent(query)}`;
+async function scrapeImages(keyword) {
+  const searchUrl = `https://ahottie.net/search?kw=${encodeURIComponent(keyword)}`;
   console.log(`Scraping: ${searchUrl}`);
 
-  let browser;
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--no-zygote",
+      "--single-process"
+    ],
+    executablePath:
+      process.env.PUPPETEER_EXECUTABLE_PATH ||
+      "/usr/bin/google-chrome-stable"
+  });
+
+  const page = await browser.newPage();
+
   try {
-    browser = await puppeteer.launch({
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-      headless: true
+    await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+
+    // Wait for thumbnails
+    await page.waitForSelector("img", { timeout: 15000 });
+
+    const imageUrls = await page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll("img"));
+      return imgs
+        .map((img) => img.src)
+        .filter((src) => src && src.startsWith("http"));
     });
 
-    const page = await browser.newPage();
-    await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+    await browser.close();
 
-    const links = await page.$$eval('.thumb a', (as) =>
-      as.map((a) => a.href).filter((x) => x.includes('/gallery/'))
-    );
-
-    if (!links.length) throw new Error('No gallery links found');
-
-    const target = links[index - 1] || links[0];
-    console.log(`Navigating to gallery: ${target}`);
-
-    await page.goto(target, { waitUntil: 'networkidle2', timeout: 90000 });
-
-    const imageLinks = await page.$$eval('.gallery-item img', (imgs) =>
-      imgs.map((img) => img.getAttribute('src') || img.getAttribute('data-src'))
-    );
-
-    return imageLinks.filter(Boolean);
+    const uniqueUrls = [...new Set(imageUrls)];
+    console.log(`Found ${uniqueUrls.length} images for ${keyword}`);
+    return uniqueUrls.slice(0, 10); // Limit results
   } catch (err) {
-    console.error('Puppeteer error:', err.message);
-    return [];
-  } finally {
-    if (browser) await browser.close().catch(() => {});
+    console.error("Puppeteer scraping error:", err);
+    await browser.close();
+    throw err;
   }
 }
 
-// Download image to cache
-async function downloadImage(url, folder, filename) {
-  const filePath = path.join(folder, filename);
+app.get("/", (req, res) => {
+  res.send(`
+    <h2>🔥 NSFW Image Scraper API</h2>
+    <p>Usage: <code>/api/pies?name=japan&apikey=jehad4</code></p>
+  `);
+});
+
+app.get("/api/pies", async (req, res) => {
+  const name = req.query.name;
+  const apikey = req.query.apikey;
+
+  if (!name) return res.status(400).json({ error: "Missing 'name' parameter." });
+  if (apikey !== API_KEY) return res.status(403).json({ error: "Invalid API key." });
+
+  const cacheDir = path.join(__dirname, "downloads", name);
+  await fs.mkdir(cacheDir, { recursive: true });
+
+  const cacheFiles = await fs.readdir(cacheDir);
+  if (cacheFiles.length > 0) {
+    console.log(`Serving cached images for ${name}`);
+    return res.json({
+      source: "cache",
+      count: cacheFiles.length,
+      images: cacheFiles.map((f) => `/downloads/${name}/${f}`)
+    });
+  }
+
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const buffer = await res.buffer();
-    await fs.writeFile(filePath, buffer);
-    console.log(`Downloaded ${filename}`);
-    return filePath;
+    const urls = await scrapeImages(name);
+
+    if (urls.length === 0) {
+      return res.json({
+        error: `No NSFW images found for "${name}".`,
+        suggestion: `Try another keyword on https://ahottie.net/?s=${encodeURIComponent(name)}`
+      });
+    }
+
+    let count = 0;
+    for (const url of urls) {
+      try {
+        const response = await fetch(url);
+        const buffer = await response.buffer();
+        const fileName = `nsfw_${name}_${++count}.jpg`;
+        await fs.writeFile(path.join(cacheDir, fileName), buffer);
+        console.log(`Saved: ${fileName}`);
+      } catch (err) {
+        console.error(`Failed to save ${url}:`, err.message);
+      }
+    }
+
+    res.json({
+      source: "scraped",
+      count,
+      images: (await fs.readdir(cacheDir)).map((f) => `/downloads/${name}/${f}`)
+    });
   } catch (err) {
-    console.error(`Failed to download ${url}:`, err.message);
-    return null;
+    console.error(err);
+    res.status(500).json({ error: "Failed to scrape images" });
   }
-}
-
-// Route: health check
-app.get('/', (req, res) => {
-  res.send('✅ NSFW Image API is running on Render');
 });
 
-// Route: fetch and cache images
-app.get('/api/nsfw/:model/:index?', async (req, res) => {
-  const { model } = req.params;
-  const index = parseInt(req.params.index) || 1;
-  const modelFolder = path.join(CACHE_DIR, sanitize(model));
-  await fs.mkdir(modelFolder, { recursive: true });
-
-  const cachedFiles = await fs.readdir(modelFolder);
-  if (cachedFiles.length > 0) {
-    const random = cachedFiles[Math.floor(Math.random() * cachedFiles.length)];
-    return res.sendFile(path.join(modelFolder, random));
-  }
-
-  console.log(`No cache for ${model}, scraping...`);
-  const images = await scrapeImages(model, index);
-
-  if (!images.length) {
-    return res.status(404).json({
-      error: `No images found for "${model}"`,
-      suggestion: `Try "Mia Nanasawa" or "LinXingLan"`,
-      debug: { search_url: `https://ahottie.net/search?kw=${model}`, links: images }
-    });
-  }
-
-  const firstImage = images[0];
-  const fileName = `nsfw_${sanitize(model)}_${index}.jpg`;
-  const filePath = await downloadImage(firstImage, modelFolder, fileName);
-
-  if (!filePath) {
-    return res.status(500).json({ error: 'Failed to download image' });
-  }
-
-  res.sendFile(filePath);
-});
-
-// Route: get JSON of image URLs
-app.get('/api/album/:model/:index?', async (req, res) => {
-  const { model } = req.params;
-  const index = parseInt(req.params.index) || 1;
-  const images = await scrapeImages(model, index);
-
-  if (!images.length) {
-    return res.status(404).json({
-      error: `No images found for "${model}"`,
-      suggestion: `Try "Mia Nanasawa" or "LinXingLan"`,
-      debug: { search_url: `https://ahottie.net/search?kw=${model}`, links: images }
-    });
-  }
-
-  res.json({ model, index, count: images.length, images });
-});
-
-// Static downloads folder
-app.use('/downloads', express.static(path.join(__dirname, 'downloads')));
-
-// Start server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Health check: https://api-nfsw.onrender.com`);
+  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`🌍 Open: http://localhost:${PORT}`);
 });
