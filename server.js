@@ -7,19 +7,21 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+// Define storage paths for Render's persistent disk
+const STORAGE_PATH = process.env.STORAGE_PATH || path.join(__dirname, 'storage');
+const CACHE_DIR = path.join(STORAGE_PATH, 'cache');
+const DOWNLOADS_DIR = path.join(STORAGE_PATH, 'downloads');
+
 // Middleware
 app.use(express.json());
-app.use('/downloads', express.static(path.join(__dirname, 'downloads')));
+app.use('/downloads', express.static(DOWNLOADS_DIR));
 
 // Polyfill for waitForTimeout
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 // Ensure directories exist
 async function ensureDirectories() {
-  const directories = [
-    path.join(__dirname, 'cache'),
-    path.join(__dirname, 'downloads')
-  ];
+  const directories = [CACHE_DIR, DOWNLOADS_DIR];
   for (const dir of directories) {
     try {
       await fs.mkdir(dir, { recursive: true });
@@ -38,7 +40,7 @@ app.get('/api/album/:model/:index', async (req, res) => {
   let browser;
   try {
     const { model, index } = req.params;
-    const cacheDir = path.join(__dirname, 'cache', model);
+    const cacheDir = path.join(CACHE_DIR, model);
     const cacheFile = path.join(cacheDir, `images_${index}.json`);
 
     await fs.mkdir(cacheDir, { recursive: true });
@@ -54,7 +56,7 @@ app.get('/api/album/:model/:index', async (req, res) => {
           album: images,
           total: images.length,
           source: 'cache',
-          downloads_url: `http://localhost:${PORT}/downloads/${encodeURIComponent(model)}/`
+          downloads_url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/`
         });
       } else {
         console.log(`Empty cache for ${model} at index ${index}, forcing scrape...`);
@@ -321,7 +323,7 @@ app.get('/api/album/:model/:index', async (req, res) => {
       source: 'ahottie.net',
       search_url: `https://ahottie.net/search?kw=${encodeURIComponent(model)}`,
       gallery_url: galleryLinks[parseInt(index) - 1] || 'N/A',
-      downloads_url: `http://localhost:${PORT}/downloads/${encodeURIComponent(model)}/`
+      downloads_url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/`
     });
   } catch (error) {
     if (browser) {
@@ -342,9 +344,9 @@ app.get('/api/album/:model/:index', async (req, res) => {
 app.get('/api/bulk-download/:model/:index', async (req, res) => {
   try {
     const { model, index } = req.params;
-    const cacheDir = path.join(__dirname, 'cache', model);
+    const cacheDir = path.join(CACHE_DIR, model);
     const cacheFile = path.join(cacheDir, `images_${index}.json`);
-    const downloadDir = path.join(__dirname, 'downloads', model);
+    const downloadDir = path.join(DOWNLOADS_DIR, model);
 
     await fs.mkdir(downloadDir, { recursive: true });
 
@@ -409,7 +411,7 @@ app.get('/api/bulk-download/:model/:index', async (req, res) => {
       failed: failedDownloads.length,
       failed_list: failedDownloads,
       download_path: `/downloads/${model}/`,
-      downloads_url: `http://localhost:${PORT}/downloads/${encodeURIComponent(model)}/`
+      downloads_url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/`
     });
   } catch (error) {
     console.error(`Bulk download error for ${req.params.model} at index ${req.params.index}: ${error.message}`);
@@ -426,7 +428,7 @@ app.get('/api/bulk-download/:model/:index', async (req, res) => {
 app.get('/downloads/:model', async (req, res) => {
   try {
     const { model } = req.params;
-    const downloadDir = path.join(__dirname, 'downloads', model);
+    const downloadDir = path.join(DOWNLOADS_DIR, model);
     
     try {
       await fs.access(downloadDir);
@@ -441,14 +443,14 @@ app.get('/downloads/:model', async (req, res) => {
       .filter(file => /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(file))
       .map(file => ({
         name: file,
-        url: `http://localhost:${PORT}/downloads/${encodeURIComponent(model)}/${encodeURIComponent(file)}`
+        url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/${encodeURIComponent(file)}`
       }));
 
     res.json({
       model,
       files: imageFiles,
       total: imageFiles.length,
-      downloads_url: `http://localhost:${PORT}/downloads/${encodeURIComponent(model)}/`
+      downloads_url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/`
     });
   } catch (error) {
     console.error(`Error listing downloads for ${req.params.model}: ${error.message}`);
@@ -458,11 +460,11 @@ app.get('/downloads/:model', async (req, res) => {
   }
 });
 
-// New API endpoint: GET /api/nsfw/:model/:index
+// API endpoint: GET /api/nsfw/:model/:index
 app.get('/api/nsfw/:model/:index', async (req, res) => {
   try {
     const { model, index } = req.params;
-    const cacheDir = path.join(__dirname, 'cache', model);
+    const cacheDir = path.join(CACHE_DIR, model);
     const cacheFile = path.join(cacheDir, `images_${index}.json`);
 
     let images = [];
@@ -541,6 +543,7 @@ app.get('/api/nsfw/:model/:index', async (req, res) => {
 
 // Health check
 app.get('/', (req, res) => {
+  const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
   res.send(`
     <html>
       <head>
@@ -565,11 +568,11 @@ app.get('/', (req, res) => {
         
         <p>Example Searches:</p>
         <ul>
-          <li><a href="/api/album/cosplay/5" target="_blank">/api/album/cosplay/5</a></li>
-          <li><a href="/api/nsfw/cosplay/5" target="_blank">/api/nsfw/cosplay/5</a></li>
-          <li><a href="/api/bulk-download/cosplay/5" target="_blank">/api/bulk-download/cosplay/5</a></li>
-          <li><a href="/downloads/cosplay" target="_blank">/downloads/cosplay</a></li>
-          <li><a href="/api/album/Mia%20Nanasawa/1" target="_blank">/api/album/Mia Nanasawa/1</a></li>
+          <li><a href="/api/album/cosplay/5" target="_blank">${baseUrl}/api/album/cosplay/5</a></li>
+          <li><a href="/api/nsfw/cosplay/5" target="_blank">${baseUrl}/api/nsfw/cosplay/5</a></li>
+          <li><a href="/api/bulk-download/cosplay/5" target="_blank">${baseUrl}/api/bulk-download/cosplay/5</a></li>
+          <li><a href="/downloads/cosplay" target="_blank">${baseUrl}/downloads/cosplay</a></li>
+          <li><a href="/api/album/Mia%20Nanasawa/1" target="_blank">${baseUrl}/api/album/Mia%20Nanasawa/1</a></li>
         </ul>
       </body>
     </html>
@@ -580,5 +583,5 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Using search URL: https://ahottie.net/search?kw=modelname`);
-  console.log(`Health check: http://localhost:${PORT}`);
+  console.log(`Health check: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}`);
 });
