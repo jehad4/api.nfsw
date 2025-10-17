@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: image-scraper
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: PUPPETEER_SKIP_CHROMIUM_DOWNLOAD
+        value: "true"
