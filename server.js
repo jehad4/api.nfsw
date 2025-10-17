@@ -2,61 +2,32 @@ const express = require('express');
 const puppeteer = require('puppeteer');
 const fs = require('fs').promises;
 const path = require('path');
-const fetch = require('node-fetch');
-const puppeteerBrowsers = require('@puppeteer/browsers');
 require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-// Define storage paths for Render's persistent disk
+// Define storage path for Render's persistent disk
 const STORAGE_PATH = process.env.STORAGE_PATH || path.join(__dirname, 'storage');
 const CACHE_DIR = path.join(STORAGE_PATH, 'cache');
-const DOWNLOADS_DIR = path.join(STORAGE_PATH, 'downloads');
 
 // Middleware
 app.use(express.json());
-app.use('/downloads', express.static(DOWNLOADS_DIR));
 
 // Polyfill for waitForTimeout
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// Ensure directories exist
+// Ensure cache directory exists
 async function ensureDirectories() {
-  const directories = [CACHE_DIR, DOWNLOADS_DIR];
-  for (const dir of directories) {
-    try {
-      await fs.mkdir(dir, { recursive: true });
-      console.log(`Created directory: ${dir}`);
-    } catch (error) {
-      console.error(`Failed to create directory ${dir}: ${error.message}`);
-    }
-  }
-}
-
-// Install Chromium if needed (runs once on startup)
-async function installChromiumIfNeeded() {
   try {
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser';
-    const exists = await fs.access(executablePath).then(() => true).catch(() => false);
-    if (!exists) {
-      console.log('Chromium not found. Installing via @puppeteer/browsers...');
-      await puppeteerBrowsers.install('chrome', { cacheDir: '/tmp/puppeteer' });
-      console.log('Chromium installed successfully.');
-    } else {
-      console.log(`Using existing Chromium at: ${executablePath}`);
-    }
+    await fs.mkdir(CACHE_DIR, { recursive: true });
+    console.log(`Created directory: ${CACHE_DIR}`);
   } catch (error) {
-    console.error(`Failed to install Chromium: ${error.message}`);
-    console.log('Falling back to default Puppeteer behavior.');
+    console.error(`Failed to create directory ${CACHE_DIR}: ${error.message}`);
   }
 }
 
 // Run on startup
-async function startup() {
-  await ensureDirectories();
-  await installChromiumIfNeeded();
-}
-startup().catch(error => console.error(`Startup failed: ${error.message}`));
+ensureDirectories().catch(error => console.error(`Directory setup failed: ${error.message}`));
 
 // API endpoint: GET /api/album/:model/:index
 app.get('/api/album/:model/:index', async (req, res) => {
@@ -79,7 +50,7 @@ app.get('/api/album/:model/:index', async (req, res) => {
           album: images,
           total: images.length,
           source: 'cache',
-          downloads_url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/`
+          cache_file: cacheFile
         });
       } else {
         console.log(`Empty cache for ${model} at index ${index}, forcing scrape...`);
@@ -346,7 +317,7 @@ app.get('/api/album/:model/:index', async (req, res) => {
       source: 'ahottie.net',
       search_url: `https://ahottie.net/search?kw=${encodeURIComponent(model)}`,
       gallery_url: galleryLinks[parseInt(index) - 1] || 'N/A',
-      downloads_url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/`
+      cache_file: cacheFile
     });
   } catch (error) {
     if (browser) {
@@ -363,19 +334,123 @@ app.get('/api/album/:model/:index', async (req, res) => {
   }
 });
 
-// API endpoint: GET /api/bulk-download/:model/:index
-app.get('/api/bulk-download/:model/:index', async (req, res) => {
+// API endpoint: GET /api/nsfw/:model/:index
+app.get('/api/nsfw/:model/:index', async (req, res) => {
   try {
     const { model, index } = req.params;
     const cacheDir = path.join(CACHE_DIR, model);
     const cacheFile = path.join(cacheDir, `images_${index}.json`);
-    const downloadDir = path.join(DOWNLOADS_DIR, model);
-
-    await fs.mkdir(downloadDir, { recursive: true });
 
     let images = [];
     try {
       const cachedData = await fs.readFile(cacheFile, 'utf8');
       images = JSON.parse(cachedData);
       if (images.length === 0) {
-        console.log(`Empty cache for ${model}
+        console.log(`Empty cache for ${model} at index ${index}`);
+        return res.status(404).send(`
+          <html>
+            <head><title>Error</title></head>
+            <body>
+              <h1>Error</h1>
+              <p>No images found in cache for ${model} at index ${index}.</p>
+              <p>Run <a href="/api/album/${encodeURIComponent(model)}/${index}">/api/album/${encodeURIComponent(model)}/${index}</a> first.</p>
+            </body>
+          </html>
+        `);
+      }
+    } catch (e) {
+      console.log(`No cache file found for ${model} at index ${index}`);
+      return res.status(404).send(`
+        <html>
+          <head><title>Error</title></head>
+          <body>
+            <h1>Error</h1>
+            <p>No cached images for ${model} at index ${index}.</p>
+            <p>Run <a href="/api/album/${encodeURIComponent(model)}/${index}">/api/album/${encodeURIComponent(model)}/${index}</a> first.</p>
+          </body>
+        </html>
+      `);
+    }
+
+    const imageHtml = images.map(img => `
+      <div style="margin-bottom: 20px;">
+        <h3>${img.name}</h3>
+        <img src="${img.url}" alt="${img.name}" style="max-width: 100%; height: auto; max-height: 600px;">
+      </div>
+    `).join('');
+
+    res.send(`
+      <html>
+        <head>
+          <title>Images for ${model} (Index ${index})</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 40px; }
+            h1 { color: #333; }
+            h3 { margin: 10px 0 5px; }
+            img { display: block; }
+            a { color: #0066cc; text-decoration: none; }
+            a:hover { text-decoration: underline; }
+          </style>
+        </head>
+        <body>
+          <h1>Images for ${model} (Index ${index})</h1>
+          <p>Total images: ${images.length}</p>
+          <p><a href="/api/album/${encodeURIComponent(model)}/${index}">Refresh cache</a></p>
+          ${imageHtml}
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error(`NSFW endpoint error for ${req.params.model} at index ${req.params.index}: ${error.message}`);
+    res.status(500).send(`
+      <html>
+        <head><title>Error</title></head>
+        <body>
+          <h1>Error</h1>
+          <p>Server error: ${error.message}</p>
+        </body>
+      </html>
+    `);
+  }
+});
+
+// Health check
+app.get('/', (req, res) => {
+  const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+  res.send(`
+    <html>
+      <head>
+        <title>Image Scraper API</title>
+        <style>
+          body { font-family: Arial, sans-serif; margin: 40px; }
+          code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
+          li { margin: 10px 0; }
+        </style>
+      </head>
+      <body>
+        <h1>Image Scraper API Ready</h1>
+        <p>Using search URL: <code>https://ahottie.net/search?kw=modelname</code></p>
+        
+        <p>Endpoints:</p>
+        <ul>
+          <li><code>/api/album/cosplay/5</code> - Scrape images from 5th gallery and save to cache</li>
+          <li><code>/api/nsfw/cosplay/5</code> - Display all images from cache/cosplay/images_5.json</li>
+        </ul>
+        
+        <p>Example Searches:</p>
+        <ul>
+          <li><a href="/api/album/cosplay/5" target="_blank">${baseUrl}/api/album/cosplay/5</a></li>
+          <li><a href="/api/nsfw/cosplay/5" target="_blank">${baseUrl}/api/nsfw/cosplay/5</a></li>
+          <li><a href="/api/album/Mia%20Nanasawa/1" target="_blank">${baseUrl}/api/album/Mia%20Nanasawa/1</a></li>
+        </ul>
+      </body>
+    </html>
+  `);
+});
+
+// Start server
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Using search URL: https://ahottie.net/search?kw=modelname`);
+  console.log(`Health check: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}`);
+});
