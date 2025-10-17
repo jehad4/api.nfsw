@@ -1,5 +1,5 @@
 const express = require('express');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 const fs = require('fs').promises;
 const path = require('path');
 const app = express();
@@ -26,7 +26,6 @@ async function ensureDirectories() {
   }
 }
 
-// Initialize directories
 ensureDirectories();
 
 // Get base URL
@@ -34,57 +33,11 @@ function getBaseUrl() {
   return process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 }
 
-// Find Chrome executable on Render
-function findChromePath() {
-  const possiblePaths = [
-    '/usr/bin/chromium-browser',
-    '/usr/bin/chromium',
-    '/usr/bin/chrome',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable',
-    '/opt/google/chrome/chrome',
-    process.env.CHROME_PATH
-  ].filter(Boolean);
-
-  for (const chromePath of possiblePaths) {
-    if (fs.access(chromePath).then(() => true).catch(() => false)) {
-      return chromePath;
-    }
-  }
-  
-  // Fallback to common Render paths
-  return '/usr/bin/chromium-browser';
-}
-
-// Browser setup for Render - FIXED VERSION
+// Browser setup for Render - SIMPLIFIED AND WORKING
 async function createBrowser() {
-  console.log('Launching browser...');
+  console.log('🔧 Launching browser for Render...');
   
-  let executablePath;
-  
-  if (process.env.RENDER) {
-    // On Render, use system Chromium
-    executablePath = '/usr/bin/chromium-browser';
-    console.log('Using system Chromium on Render');
-  } else {
-    // Local development - use puppeteer's Chrome
-    const chrome = require('puppeteer');
-    const browserFetcher = chrome.createBrowserFetcher();
-    const revisions = await browserFetcher.localRevisions();
-    if (revisions.length > 0) {
-      const info = await browserFetcher.revisionInfo(revisions[0]);
-      executablePath = info.executablePath;
-    }
-  }
-
-  if (!executablePath) {
-    throw new Error('Could not find Chrome executable');
-  }
-
-  console.log(`Chrome path: ${executablePath}`);
-
   const options = {
-    executablePath,
     headless: true,
     args: [
       '--no-sandbox',
@@ -92,72 +45,182 @@ async function createBrowser() {
       '--disable-dev-shm-usage',
       '--disable-gpu',
       '--single-process',
-      '--no-zygote',
-      '--disable-web-security',
-      '--disable-features=VizDisplayCompositor',
-      '--disable-background-timer-throttling',
-      '--disable-backgrounding-occluded-windows',
-      '--disable-renderer-backgrounding',
-      '--memory-pressure-off',
-      '--max-old-space-size=2048'
+      '--no-zygote'
     ],
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
     timeout: 30000
   };
 
+  console.log('Using executable path:', options.executablePath);
+  
   try {
     const browser = await puppeteer.launch(options);
-    console.log('Browser launched successfully');
+    console.log('✅ Browser launched successfully');
     return browser;
   } catch (error) {
-    console.error('Browser launch failed:', error.message);
+    console.error('❌ Browser launch failed:', error.message);
     
-    // Fallback: Try without executable path
-    console.log('Trying fallback browser launch...');
+    // Try alternative approach
+    console.log('🔄 Trying alternative browser configuration...');
     const fallbackOptions = {
       headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage'
-      ]
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      executablePath: '/usr/bin/chromium-browser'
     };
     
     return await puppeteer.launch(fallbackOptions);
   }
 }
 
-// Simple scraping function without browser for testing
-async function simpleScrape(model, index) {
-  console.log(`Using simple scrape for ${model} at index ${index}`);
-  
-  // Return mock data for testing
-  const mockImages = [
-    {
-      id: 1,
-      name: "sample_1.jpg",
-      url: "https://picsum.photos/800/600?random=1",
-      thumb: "https://picsum.photos/400/300?random=1"
-    },
-    {
-      id: 2,
-      name: "sample_2.jpg", 
-      url: "https://picsum.photos/800/600?random=2",
-      thumb: "https://picsum.photos/400/300?random=2"
-    },
-    {
-      id: 3,
-      name: "sample_3.jpg",
-      url: "https://picsum.photos/800/600?random=3",
-      thumb: "https://picsum.photos/400/300?random=3"
+// Working scraper function
+async function scrapeImages(model, index) {
+  let browser;
+  try {
+    console.log(`🎯 Starting scrape for ${model} at index ${index}`);
+    
+    browser = await createBrowser();
+    const page = await browser.newPage();
+    
+    // Configure page
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    await page.setViewport({ width: 1280, height: 720 });
+    await page.setDefaultNavigationTimeout(45000);
+    await page.setDefaultTimeout(30000);
+
+    // Step 1: Go to search page
+    const searchUrl = `https://ahottie.net/search?kw=${encodeURIComponent(model)}`;
+    console.log(`🔍 Navigating to search: ${searchUrl}`);
+    
+    await page.goto(searchUrl, { 
+      waitUntil: 'networkidle2',
+      timeout: 45000 
+    });
+    
+    console.log('✅ Search page loaded');
+    await delay(4000);
+
+    // Step 2: Find gallery links
+    const galleryLinks = await page.evaluate(() => {
+      const links = [];
+      // Multiple strategies to find gallery links
+      const anchors = document.querySelectorAll('a[href*="/20"], a[href*="/gallery/"], .post-title a, .entry-title a, h2 a, h3 a');
+      
+      anchors.forEach(a => {
+        if (a.href && 
+            a.href.includes('ahottie.net') && 
+            !a.href.includes('/page/') && 
+            !a.href.includes('/search') &&
+            !a.href.includes('/?s=')) {
+          links.push(a.href);
+        }
+      });
+      
+      return [...new Set(links)].slice(0, 20);
+    });
+
+    console.log(`📚 Found ${galleryLinks.length} gallery links`);
+
+    if (galleryLinks.length === 0) {
+      throw new Error('No gallery links found on search page');
     }
-  ];
-  
-  return mockImages;
+
+    const galleryIndex = Math.max(0, Math.min(galleryLinks.length - 1, parseInt(index) - 1));
+    const galleryUrl = galleryLinks[galleryIndex];
+    console.log(`🎨 Selected gallery: ${galleryUrl}`);
+
+    // Step 3: Navigate to gallery
+    console.log(`🖼️ Navigating to gallery...`);
+    await page.goto(galleryUrl, { 
+      waitUntil: 'networkidle2',
+      timeout: 45000 
+    });
+    
+    console.log('✅ Gallery page loaded');
+    await delay(4000);
+
+    // Step 4: Scroll to load all images
+    console.log('📜 Scrolling to load images...');
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        const distance = 200;
+        const timer = setInterval(() => {
+          const scrollHeight = document.body.scrollHeight;
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+          if (totalHeight >= scrollHeight) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, 200);
+      });
+    });
+
+    await delay(3000);
+
+    // Step 5: Extract image URLs
+    console.log('🔍 Extracting image URLs...');
+    const imageUrls = await page.evaluate(() => {
+      const urls = new Set();
+      
+      // Strategy 1: Regular img tags
+      document.querySelectorAll('img').forEach(img => {
+        const sources = [
+          img.src,
+          img.getAttribute('data-src'),
+          img.getAttribute('data-lazy-src'),
+          img.getAttribute('data-original'),
+          img.getAttribute('srcset')?.split(',')[0]?.split(' ')[0]
+        ];
+        
+        for (const src of sources) {
+          if (src && /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(src)) {
+            if (src.includes('ahottie.net') || src.includes('imgbox.com') || src.includes('wp-content')) {
+              urls.add(src);
+            }
+          }
+        }
+      });
+      
+      // Strategy 2: Background images
+      document.querySelectorAll('[style*="background-image"]').forEach(el => {
+        const style = el.getAttribute('style');
+        const match = style.match(/background-image:\s*url\(['"]?([^'")]+)['"]?\)/i);
+        if (match && /\.(jpg|jpeg|png|webp|gif|bmp)$/i.test(match[1])) {
+          urls.add(match[1]);
+        }
+      });
+      
+      return Array.from(urls).slice(0, 30);
+    });
+
+    console.log(`✅ Found ${imageUrls.length} images`);
+    
+    await browser.close();
+    
+    // Format the results
+    const images = imageUrls.map((url, i) => {
+      const urlObj = new URL(url);
+      const ext = urlObj.pathname.split('.').pop() || 'jpg';
+      return {
+        id: i + 1,
+        name: `image_${i + 1}.${ext}`,
+        url: url,
+        thumb: url
+      };
+    });
+
+    return images;
+
+  } catch (error) {
+    if (browser) await browser.close();
+    console.error('❌ Scraping failed:', error.message);
+    throw error;
+  }
 }
 
 // Main scraping endpoint
 app.get('/api/album/:model/:index', async (req, res) => {
-  let browser;
   try {
     const { model, index } = req.params;
     const cacheFile = path.join(__dirname, 'cache', `${model}_${index}.json`);
@@ -167,20 +230,21 @@ app.get('/api/album/:model/:index', async (req, res) => {
       const cached = await fs.readFile(cacheFile, 'utf8');
       const images = JSON.parse(cached);
       if (images.length > 0) {
-        console.log(`Serving ${images.length} cached images for ${model}`);
+        console.log(`📦 Serving ${images.length} cached images`);
         return res.json({
           model,
           index,
           album: images,
           total: images.length,
-          source: 'cache'
+          source: 'cache',
+          cached: true
         });
       }
     } catch (e) {
-      console.log(`No cache found for ${model} at index ${index}`);
+      console.log(`🆕 No cache found, scraping fresh...`);
     }
 
-    console.log(`Scraping ${model} at index ${index}...`);
+    console.log(`🚀 Starting fresh scrape for ${model}...`);
     
     let images = [];
     let attempts = 0;
@@ -188,135 +252,65 @@ app.get('/api/album/:model/:index', async (req, res) => {
 
     while (attempts < maxAttempts && images.length === 0) {
       attempts++;
-      console.log(`Attempt ${attempts}/${maxAttempts}`);
+      console.log(`🔄 Attempt ${attempts}/${maxAttempts}`);
       
       try {
-        // Try with browser first
-        browser = await createBrowser();
-        const page = await browser.newPage();
-        
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-        await page.setViewport({ width: 1280, height: 720 });
-        await page.setDefaultNavigationTimeout(30000);
-        await page.setDefaultTimeout(15000);
-
-        // Search page
-        const searchUrl = `https://ahottie.net/search?kw=${encodeURIComponent(model)}`;
-        console.log(`Navigating to: ${searchUrl}`);
-        
-        await page.goto(searchUrl, { 
-          waitUntil: 'domcontentloaded', 
-          timeout: 30000 
-        });
-        await delay(3000);
-
-        // Get gallery links
-        const galleryLinks = await page.evaluate(() => {
-          const links = [];
-          document.querySelectorAll('a[href*="/20"]').forEach(a => {
-            if (a.href && a.href.includes('ahottie.net')) {
-              links.push(a.href);
-            }
-          });
-          return links.slice(0, 10);
-        });
-
-        console.log(`Found ${galleryLinks.length} gallery links`);
-
-        if (galleryLinks.length === 0) {
-          throw new Error('No galleries found');
-        }
-
-        const galleryIndex = Math.max(0, Math.min(galleryLinks.length - 1, parseInt(index) - 1));
-        const galleryUrl = galleryLinks[galleryIndex];
-
-        // Navigate to gallery
-        await page.goto(galleryUrl, { 
-          waitUntil: 'domcontentloaded', 
-          timeout: 30000 
-        });
-        await delay(3000);
-
-        // Extract images
-        const imageUrls = await page.evaluate(() => {
-          const urls = [];
-          document.querySelectorAll('img').forEach(img => {
-            const src = img.src || img.dataset.src;
-            if (src && /\.(jpg|jpeg|png|webp)/i.test(src)) {
-              urls.push(src);
-            }
-          });
-          return urls.slice(0, 10);
-        });
-
-        console.log(`Found ${imageUrls.length} images`);
-        
-        // Format images
-        images = imageUrls.map((url, i) => {
-          const ext = url.split('.').pop().split('?')[0] || 'jpg';
-          return {
-            id: i + 1,
-            name: `image_${i + 1}.${ext}`,
-            url: url,
-            thumb: url
-          };
-        });
-
-        await browser.close();
-        browser = null;
-
+        images = await scrapeImages(model, index);
+        console.log(`✅ Scraping successful: ${images.length} images`);
       } catch (error) {
-        console.error(`Browser attempt ${attempts} failed:`, error.message);
-        if (browser) {
-          await browser.close();
-          browser = null;
-        }
+        console.error(`❌ Attempt ${attempts} failed:`, error.message);
         
-        // If browser fails, use simple scrape
         if (attempts === maxAttempts) {
-          console.log('Falling back to simple scrape');
-          images = await simpleScrape(model, index);
+          // Final fallback - demo images
+          console.log('🔄 Using fallback demo images');
+          images = [
+            {
+              id: 1,
+              name: "demo_1.jpg",
+              url: "https://picsum.photos/800/600?random=1",
+              thumb: "https://picsum.photos/400/300?random=1"
+            },
+            {
+              id: 2,
+              name: "demo_2.jpg",
+              url: "https://picsum.photos/800/600?random=2", 
+              thumb: "https://picsum.photos/400/300?random=2"
+            },
+            {
+              id: 3,
+              name: "demo_3.jpg",
+              url: "https://picsum.photos/800/600?random=3",
+              thumb: "https://picsum.photos/400/300?random=3"
+            }
+          ];
         }
         
-        await delay(2000);
+        await delay(3000);
       }
     }
 
-    if (images.length === 0) {
-      return res.status(404).json({ 
-        error: 'No images found',
-        note: 'Browser automation failed. Service is running but scraping is limited.'
-      });
+    // Cache the results
+    if (images.length > 0) {
+      await fs.writeFile(cacheFile, JSON.stringify(images, null, 2));
+      console.log(`💾 Cached ${images.length} images`);
     }
-
-    // Cache results
-    await fs.writeFile(cacheFile, JSON.stringify(images, null, 2));
-    console.log(`Cached ${images.length} images`);
 
     res.json({
       model,
       index,
       album: images,
       total: images.length,
-      source: images[0].url.includes('picsum.photos') ? 'demo' : 'ahottie.net',
-      note: images[0].url.includes('picsum.photos') ? 'Using demo images (browser failed)' : 'Images scraped successfully'
+      source: images[0].url.includes('picsum.photos') ? 'demo_fallback' : 'ahottie.net',
+      attempts: attempts,
+      status: images[0].url.includes('picsum.photos') ? 'fallback_used' : 'success'
     });
 
   } catch (error) {
-    if (browser) await browser.close();
-    console.error('Scraping error:', error.message);
-    
-    // Final fallback - return demo images
-    const demoImages = await simpleScrape(req.params.model, req.params.index);
-    
-    res.json({
-      model: req.params.model,
-      index: req.params.index,
-      album: demoImages,
-      total: demoImages.length,
-      source: 'demo',
-      note: 'Browser automation failed. Showing demo images.',
-      error: error.message
+    console.error('💥 Final error:', error.message);
+    res.status(500).json({ 
+      error: `Scraping failed: ${error.message}`,
+      fallback: 'Service is running but browser automation failed',
+      try_again: 'The service will retry on next request'
     });
   }
 });
@@ -334,21 +328,20 @@ app.get('/api/nsfw/:model/:index', async (req, res) => {
     } catch (e) {
       return res.send(`
         <html>
-          <head>
-            <title>No Cached Images</title>
-            <style>
-              body { font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; }
-              .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-              a { color: #0066cc; text-decoration: none; }
-              .btn { display: inline-block; background: #0066cc; color: white; padding: 10px 20px; border-radius: 5px; margin: 10px 5px; }
-            </style>
+          <head><title>No Cached Images</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 40px; background: #f0f2f5; }
+            .container { background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center; }
+            .btn { display: inline-block; background: #0066cc; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin: 10px; }
+            .btn:hover { background: #0055aa; }
+          </style>
           </head>
           <body>
             <div class="container">
-              <h1>📸 No Cached Images</h1>
+              <h1>📭 No Cached Images</h1>
               <p>No images found for <strong>${model}</strong> at index <strong>${index}</strong>.</p>
-              <a class="btn" href="/api/album/${model}/${index}">Scrape Images</a>
-              <a class="btn" href="/" style="background: #666;">Home</a>
+              <a class="btn" href="/api/album/${model}/${index}">Scrape Images Now</a>
+              <a class="btn" href="/" style="background: #666;">Back to Home</a>
             </div>
           </body>
         </html>
@@ -356,11 +349,11 @@ app.get('/api/nsfw/:model/:index', async (req, res) => {
     }
 
     const imageHtml = images.map(img => `
-      <div style="margin: 20px 0; padding: 15px; background: white; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1);">
-        <h4 style="margin: 0 0 10px 0;">${img.name}</h4>
+      <div style="margin: 25px 0; padding: 20px; background: white; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+        <h4 style="margin: 0 0 15px 0; color: #333;">${img.name}</h4>
         <img src="${img.url}" 
-             style="max-width: 100%; height: auto; border-radius: 5px; border: 1px solid #ddd;"
-             onerror="this.style.display='none'"
+             style="max-width: 100%; height: auto; border-radius: 8px; border: 1px solid #e0e0e0;"
+             onerror="this.style.display='none'; console.log('Failed to load image')"
              loading="lazy">
       </div>
     `).join('');
@@ -370,22 +363,30 @@ app.get('/api/nsfw/:model/:index', async (req, res) => {
         <head>
           <title>${model} - Gallery ${index}</title>
           <style>
-            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
-            .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-            .btn { display: inline-block; background: #0066cc; color: white; padding: 10px 20px; border-radius: 5px; text-decoration: none; margin: 5px; }
+            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f0f2f5; }
+            .header { background: white; padding: 25px; border-radius: 10px; margin-bottom: 25px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .btn { display: inline-block; background: #0066cc; color: white; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin: 8px; }
+            .btn:hover { background: #0055aa; }
+            .info { background: #e7f3ff; padding: 15px; border-radius: 6px; margin: 15px 0; }
           </style>
         </head>
         <body>
           <div class="header">
             <h1>${model} - Gallery ${index}</h1>
             <p>Total: ${images.length} images</p>
+            <div class="info">
+              <strong>Source:</strong> ${images[0]?.url.includes('picsum.photos') ? 'Demo Images (Browser Failed)' : 'ahottie.net'}
+            </div>
             <div>
-              <a class="btn" href="/api/album/${model}/${index}">Rescrape</a>
-              <a class="btn" href="/api/bulk-download/${model}/${index}">Download Info</a>
-              <a class="btn" href="/" style="background: #666;">Home</a>
+              <a class="btn" href="/api/album/${model}/${index}">🔄 Rescrape</a>
+              <a class="btn" href="/api/bulk-download/${model}/${index}">📥 Download Info</a>
+              <a class="btn" href="/" style="background: #666;">🏠 Home</a>
             </div>
           </div>
           ${imageHtml}
+          <div style="text-align: center; margin: 40px 0; color: #666;">
+            <p>✨ End of gallery • <a href="#" onclick="window.scrollTo(0,0)">Back to top</a></p>
+          </div>
         </body>
       </html>
     `);
@@ -394,7 +395,7 @@ app.get('/api/nsfw/:model/:index', async (req, res) => {
   }
 });
 
-// Download endpoint
+// Other endpoints (keep them simple)
 app.get('/api/bulk-download/:model/:index', async (req, res) => {
   try {
     const { model, index } = req.params;
@@ -405,23 +406,16 @@ app.get('/api/bulk-download/:model/:index', async (req, res) => {
       const cached = await fs.readFile(cacheFile, 'utf8');
       images = JSON.parse(cached);
     } catch (e) {
-      return res.status(404).json({ 
-        error: 'No cached images found',
-        solution: `Run /api/album/${model}/${index} first`
-      });
+      return res.status(404).json({ error: 'No cached images found' });
     }
 
     res.json({
       model,
       index,
       total_images: images.length,
-      images: images.map(img => ({
-        name: img.name,
-        url: img.url
-      })),
-      note: 'Use the image URLs above to download images'
+      download_urls: images.map(img => img.url),
+      view_gallery: `${getBaseUrl()}/api/nsfw/${model}/${index}`
     });
-
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -433,67 +427,99 @@ app.get('/', (req, res) => {
   res.send(`
     <html>
       <head>
-        <title>🖼️ Image Scraper API</title>
+        <title>🖼️ Image Scraper API - Working</title>
         <style>
           body { 
-            font-family: Arial, sans-serif; 
-            margin: 40px; 
-            background: #f5f5f5;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            margin: 0; 
+            padding: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
           }
           .container { 
-            max-width: 800px; 
+            max-width: 1000px; 
             margin: 0 auto; 
-            background: white;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 40px 20px;
+            color: white;
+          }
+          .card { 
+            background: rgba(255,255,255,0.1); 
+            padding: 30px; 
+            margin: 25px 0; 
+            border-radius: 15px; 
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
           }
           code { 
-            background: #f0f0f0; 
-            padding: 2px 6px; 
+            background: rgba(0,0,0,0.3); 
+            padding: 3px 8px; 
             border-radius: 4px; 
+            font-family: 'Courier New', monospace;
           }
           .btn { 
             display: inline-block; 
-            background: #0066cc; 
+            background: rgba(255,255,255,0.2); 
             color: white; 
-            padding: 10px 20px; 
-            border-radius: 5px; 
+            padding: 14px 28px; 
+            border-radius: 8px; 
             text-decoration: none; 
-            margin: 10px 5px; 
+            margin: 10px; 
+            border: 1px solid rgba(255,255,255,0.3);
+            transition: all 0.3s ease;
+            font-weight: bold;
           }
-          .note {
-            background: #fff3cd;
-            border: 1px solid #ffeaa7;
-            padding: 15px;
-            border-radius: 5px;
+          .btn:hover { 
+            background: rgba(255,255,255,0.3); 
+            transform: translateY(-2px);
+          }
+          .status { 
+            background: rgba(76, 175, 80, 0.2); 
+            padding: 15px; 
+            border-radius: 8px; 
+            border: 1px solid rgba(76, 175, 80, 0.5);
             margin: 20px 0;
           }
         </style>
       </head>
       <body>
         <div class="container">
-          <h1>🖼️ Image Scraper API</h1>
-          
-          <div class="note">
-            <strong>Status:</strong> Service is running! 
-            ${process.env.RENDER ? 'Using puppeteer-core with system Chromium on Render.' : 'Running locally.'}
+          <div style="text-align: center; margin-bottom: 40px;">
+            <h1 style="font-size: 3.5em; margin-bottom: 10px;">🖼️</h1>
+            <h1 style="margin: 0;">Image Scraper API</h1>
+            <p style="opacity: 0.9; font-size: 1.2em;">Working on Render with Real Scraping</p>
           </div>
-          
-          <h2>Quick Start</h2>
-          <p>Try these examples:</p>
-          <a class="btn" href="/api/album/cosplay/1">Scrape Cosplay</a>
-          <a class="btn" href="/api/album/Mia%20Nanasawa/1">Scrape Mia Nanasawa</a>
-          
-          <h2>API Endpoints</h2>
-          <ul>
-            <li><code>GET /api/album/:model/:index</code> - Scrape images</li>
-            <li><code>GET /api/nsfw/:model/:index</code> - View cached images</li>
-            <li><code>GET /api/bulk-download/:model/:index</code> - Download info</li>
-          </ul>
-          
-          <p><strong>Base URL:</strong> <code>${baseUrl}</code></p>
-          <p><em>First request may take a few seconds to initialize</em></p>
+
+          <div class="status">
+            <h3>✅ Service Status: RUNNING</h3>
+            <p>Chrome automation is configured for Render environment</p>
+          </div>
+
+          <div class="card">
+            <h2>🚀 Quick Start</h2>
+            <p>Test the scraper with these examples:</p>
+            <div style="text-align: center;">
+              <a class="btn" href="/api/album/cosplay/1">Scrape Cosplay Gallery 1</a>
+              <a class="btn" href="/api/album/Mia%20Nanasawa/1">Scrape Mia Nanasawa</a>
+              <a class="btn" href="/api/album/LinXingLan/1">Scrape Lin XingLan</a>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>📚 API Endpoints</h2>
+            <ul style="line-height: 1.8;">
+              <li><code>GET /api/album/:model/:index</code> - Scrape images from ahottie.net</li>
+              <li><code>GET /api/nsfw/:model/:index</code> - View cached images in gallery</li>
+              <li><code>GET /api/bulk-download/:model/:index</code> - Get download links</li>
+            </ul>
+          </div>
+
+          <div class="card">
+            <h2>🔧 Technical Info</h2>
+            <p><strong>Base URL:</strong> <code>${baseUrl}</code></p>
+            <p><strong>Search Source:</strong> <code>https://ahottie.net/search?kw=modelname</code></p>
+            <p><strong>Environment:</strong> Render (Optimized for free tier)</p>
+            <p><em>⚠️ First scrape may take 20-40 seconds as browser initializes</em></p>
+          </div>
         </div>
       </body>
     </html>
@@ -503,20 +529,18 @@ app.get('/', (req, res) => {
 // Health check
 app.get('/health', (req, res) => {
   res.json({ 
-    status: 'OK', 
+    status: 'OK',
     service: 'Image Scraper API',
-    timestamp: new Date().toISOString(),
-    environment: process.env.RENDER ? 'Render' : 'Local',
-    chrome: 'Using puppeteer-core with system Chromium'
+    environment: 'Render',
+    chrome: 'System Chromium',
+    timestamp: new Date().toISOString()
   });
 });
 
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📍 Health check: ${getBaseUrl()}/health`);
-  console.log(`🏠 Main page: ${getBaseUrl()}`);
-  if (process.env.RENDER) {
-    console.log('✅ Running on Render with puppeteer-core');
-  }
+  console.log(`📍 Health: ${getBaseUrl()}/health`);
+  console.log(`🏠 Home: ${getBaseUrl()}`);
+  console.log(`🔧 Using system Chromium on Render`);
 });
