@@ -3,6 +3,7 @@ const puppeteer = require('puppeteer');
 const fs = require('fs').promises;
 const path = require('path');
 const fetch = require('node-fetch');
+const puppeteerBrowsers = require('@puppeteer/browsers');
 require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -32,8 +33,30 @@ async function ensureDirectories() {
   }
 }
 
+// Install Chromium if needed (runs once on startup)
+async function installChromiumIfNeeded() {
+  try {
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser';
+    const exists = await fs.access(executablePath).then(() => true).catch(() => false);
+    if (!exists) {
+      console.log('Chromium not found. Installing via @puppeteer/browsers...');
+      await puppeteerBrowsers.install('chrome', { cacheDir: '/tmp/puppeteer' });
+      console.log('Chromium installed successfully.');
+    } else {
+      console.log(`Using existing Chromium at: ${executablePath}`);
+    }
+  } catch (error) {
+    console.error(`Failed to install Chromium: ${error.message}`);
+    console.log('Falling back to default Puppeteer behavior.');
+  }
+}
+
 // Run on startup
-ensureDirectories().catch(error => console.error(`Directory setup failed: ${error.message}`));
+async function startup() {
+  await ensureDirectories();
+  await installChromiumIfNeeded();
+}
+startup().catch(error => console.error(`Startup failed: ${error.message}`));
 
 // API endpoint: GET /api/album/:model/:index
 app.get('/api/album/:model/:index', async (req, res) => {
@@ -89,7 +112,7 @@ app.get('/api/album/:model/:index', async (req, res) => {
         browser = await puppeteer.launch({
           headless: 'new',
           args: browserArgs,
-          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
           timeout: 90000
         });
         const page = await browser.newPage();
@@ -355,233 +378,4 @@ app.get('/api/bulk-download/:model/:index', async (req, res) => {
       const cachedData = await fs.readFile(cacheFile, 'utf8');
       images = JSON.parse(cachedData);
       if (images.length === 0) {
-        console.log(`Empty cache for ${model} at index ${index}`);
-        return res.status(404).json({
-          error: `No images found in cache for ${model} at index ${index}. Run /api/album/${model}/${index} first.`
-        });
-      }
-    } catch (e) {
-      console.log(`No cache file found for ${model} at index ${index}`);
-      return res.status(404).json({
-        error: `No cached images for ${model} at index ${index}. Run /api/album/${model}/${index} first.`
-      });
-    }
-
-    let downloadedCount = 0;
-    const failedDownloads = [];
-
-    for (const image of images) {
-      const filePath = path.join(downloadDir, image.name);
-      try {
-        await fs.access(filePath);
-        console.log(`File already exists: ${image.name}`);
-        downloadedCount++;
-      } catch {
-        try {
-          const response = await fetch(image.url, {
-            headers: {
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
-            },
-            timeout: 30000
-          });
-          
-          if (response.ok) {
-            const buffer = await response.buffer();
-            await fs.writeFile(filePath, buffer);
-            console.log(`Downloaded ${image.name} to ${filePath}`);
-            downloadedCount++;
-          } else {
-            console.error(`Failed to download ${image.url}: HTTP ${response.status}`);
-            failedDownloads.push({ name: image.name, url: image.url, status: response.status });
-          }
-          await delay(1000);
-        } catch (downloadError) {
-          console.error(`Error downloading ${image.name}: ${downloadError.message}`);
-          failedDownloads.push({ name: image.name, url: image.url, error: downloadError.message });
-        }
-      }
-    }
-
-    res.json({
-      model,
-      index,
-      message: `${downloadedCount}/${images.length} images downloaded to downloads/${model}/`,
-      downloaded: downloadedCount,
-      total: images.length,
-      failed: failedDownloads.length,
-      failed_list: failedDownloads,
-      download_path: `/downloads/${model}/`,
-      downloads_url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/`
-    });
-  } catch (error) {
-    console.error(`Bulk download error for ${req.params.model} at index ${req.params.index}: ${error.message}`);
-    res.status(500).json({
-      error: `Bulk download error: ${error.message}`,
-      debug: {
-        timestamp: new Date().toISOString()
-      }
-    });
-  }
-});
-
-// API endpoint: GET /downloads/:model
-app.get('/downloads/:model', async (req, res) => {
-  try {
-    const { model } = req.params;
-    const downloadDir = path.join(DOWNLOADS_DIR, model);
-    
-    try {
-      await fs.access(downloadDir);
-    } catch {
-      return res.status(404).json({
-        error: `No downloads found for ${model}. Run /api/bulk-download/${model}/<index> first.`
-      });
-    }
-
-    const files = await fs.readdir(downloadDir);
-    const imageFiles = files
-      .filter(file => /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(file))
-      .map(file => ({
-        name: file,
-        url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/${encodeURIComponent(file)}`
-      }));
-
-    res.json({
-      model,
-      files: imageFiles,
-      total: imageFiles.length,
-      downloads_url: `${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}/downloads/${encodeURIComponent(model)}/`
-    });
-  } catch (error) {
-    console.error(`Error listing downloads for ${req.params.model}: ${error.message}`);
-    res.status(500).json({
-      error: `Error listing downloads: ${error.message}`
-    });
-  }
-});
-
-// API endpoint: GET /api/nsfw/:model/:index
-app.get('/api/nsfw/:model/:index', async (req, res) => {
-  try {
-    const { model, index } = req.params;
-    const cacheDir = path.join(CACHE_DIR, model);
-    const cacheFile = path.join(cacheDir, `images_${index}.json`);
-
-    let images = [];
-    try {
-      const cachedData = await fs.readFile(cacheFile, 'utf8');
-      images = JSON.parse(cachedData);
-      if (images.length === 0) {
-        console.log(`Empty cache for ${model} at index ${index}`);
-        return res.status(404).send(`
-          <html>
-            <head><title>Error</title></head>
-            <body>
-              <h1>Error</h1>
-              <p>No images found in cache for ${model} at index ${index}.</p>
-              <p>Run <a href="/api/album/${encodeURIComponent(model)}/${index}">/api/album/${encodeURIComponent(model)}/${index}</a> first.</p>
-            </body>
-          </html>
-        `);
-      }
-    } catch (e) {
-      console.log(`No cache file found for ${model} at index ${index}`);
-      return res.status(404).send(`
-        <html>
-          <head><title>Error</title></head>
-          <body>
-            <h1>Error</h1>
-            <p>No cached images for ${model} at index ${index}.</p>
-            <p>Run <a href="/api/album/${encodeURIComponent(model)}/${index}">/api/album/${encodeURIComponent(model)}/${index}</a> first.</p>
-          </body>
-        </html>
-      `);
-    }
-
-    const imageHtml = images.map(img => `
-      <div style="margin-bottom: 20px;">
-        <h3>${img.name}</h3>
-        <img src="${img.url}" alt="${img.name}" style="max-width: 100%; height: auto; max-height: 600px;">
-      </div>
-    `).join('');
-
-    res.send(`
-      <html>
-        <head>
-          <title>Images for ${model} (Index ${index})</title>
-          <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            h1 { color: #333; }
-            h3 { margin: 10px 0 5px; }
-            img { display: block; }
-            a { color: #0066cc; text-decoration: none; }
-            a:hover { text-decoration: underline; }
-          </style>
-        </head>
-        <body>
-          <h1>Images for ${model} (Index ${index})</h1>
-          <p>Total images: ${images.length}</p>
-          <p><a href="/downloads/${encodeURIComponent(model)}">View downloaded files</a></p>
-          <p><a href="/api/bulk-download/${encodeURIComponent(model)}/${index}">Download all images</a></p>
-          ${imageHtml}
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    console.error(`NSFW endpoint error for ${req.params.model} at index ${req.params.index}: ${error.message}`);
-    res.status(500).send(`
-      <html>
-        <head><title>Error</title></head>
-        <body>
-          <h1>Error</h1>
-          <p>Server error: ${error.message}</p>
-        </body>
-      </html>
-    `);
-  }
-});
-
-// Health check
-app.get('/', (req, res) => {
-  const baseUrl = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-  res.send(`
-    <html>
-      <head>
-        <title>Image Scraper API</title>
-        <style>
-          body { font-family: Arial, sans-serif; margin: 40px; }
-          code { background: #f4f4f4; padding: 2px 6px; border-radius: 3px; }
-          li { margin: 10px 0; }
-        </style>
-      </head>
-      <body>
-        <h1>Image Scraper API Ready</h1>
-        <p>Using search URL: <code>https://ahottie.net/search?kw=modelname</code></p>
-        
-        <p>Endpoints:</p>
-        <ul>
-          <li><code>/api/album/cosplay/5</code> - Scrape images from 5th gallery for a search term</li>
-          <li><code>/api/nsfw/cosplay/5</code> - Display all images from cache/cosplay/images_5.json</li>
-          <li><code>/api/bulk-download/cosplay/5</code> - Download all images from cache/cosplay/images_5.json</li>
-          <li><code>/downloads/cosplay</code> - List downloaded images for cosplay</li>
-        </ul>
-        
-        <p>Example Searches:</p>
-        <ul>
-          <li><a href="/api/album/cosplay/5" target="_blank">${baseUrl}/api/album/cosplay/5</a></li>
-          <li><a href="/api/nsfw/cosplay/5" target="_blank">${baseUrl}/api/nsfw/cosplay/5</a></li>
-          <li><a href="/api/bulk-download/cosplay/5" target="_blank">${baseUrl}/api/bulk-download/cosplay/5</a></li>
-          <li><a href="/downloads/cosplay" target="_blank">${baseUrl}/downloads/cosplay</a></li>
-          <li><a href="/api/album/Mia%20Nanasawa/1" target="_blank">${baseUrl}/api/album/Mia%20Nanasawa/1</a></li>
-        </ul>
-      </body>
-    </html>
-  `);
-});
-
-// Start server
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Using search URL: https://ahottie.net/search?kw=modelname`);
-  console.log(`Health check: ${process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`}`);
-});
+        console.log(`Empty cache for ${model}
