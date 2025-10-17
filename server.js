@@ -69,6 +69,8 @@ app.get('/api/album/:model/:index', async (req, res) => {
       attempts++;
       try {
         console.log(`Scraping attempt ${attempts}/${maxAttempts} for ${model} at index ${index}...`);
+        
+        // Puppeteer launch with Render-compatible Chromium
         const browserArgs = [
           '--no-sandbox',
           '--disable-setuid-sandbox',
@@ -80,12 +82,14 @@ app.get('/api/album/:model/:index', async (req, res) => {
         if (process.env.PROXY_SERVER) {
           browserArgs.push(`--proxy-server=${process.env.PROXY_SERVER}`);
         }
+
         browser = await puppeteer.launch({
           headless: 'new',
           args: browserArgs,
-          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium-browser',
+          executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
           timeout: 90000
         });
+
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
         await page.setExtraHTTPHeaders({
@@ -134,12 +138,12 @@ app.get('/api/album/:model/:index', async (req, res) => {
         galleryLinks = await page.evaluate(() => {
           const links = [];
           const selectors = [
-            'a[href*="/20"]',              // Date-based galleries
+            'a[href*="/20"]',
             '.post-title a', '.entry-title a', 'h2 a', 'h3 a', '.post a',
             '.gallery a', 'a[href*="/gallery/"]', 'a[href*="/photo/"]',
             '.thumb a', '.image-link', '.post-thumbnail a', '.wp-block-gallery a',
-            'a[href*="/tags/"]',           // Tag links (key for cosplay)
-            'a[href*="ahottie.net"]'       // Broad catch-all
+            'a[href*="/tags/"]',
+            'a[href*="ahottie.net"]'
           ];
           
           selectors.forEach(selector => {
@@ -226,7 +230,6 @@ app.get('/api/album/:model/:index', async (req, res) => {
 
         console.log(`Found ${imageUrls.length} images in ${galleryLink}`);
 
-        // Fallback to search page if no images
         if (imageUrls.length === 0) {
           console.log(`No images in gallery, falling back to search page...`);
           await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 });
